@@ -207,6 +207,21 @@ class NewelleExtension(Handler):
             }
         """
         return []
+
+    def get_image_generator_handlers(self) -> list[dict]:
+        """
+        Returns list of image generator handlers
+
+        Returns:
+            list: list of image generator handlers in this format
+            {
+                "key": "key of handler",
+                "title": "title of handler",
+                "description": "description of handler",
+                "class": ImageGeneratorHandler - The class of handler,
+            }
+        """
+        return []
     
     def get_additional_prompts(self) -> list:
         """
@@ -453,7 +468,7 @@ class ExtensionLoader:
         for tool in extension.get_tools():
             tool_registry.remove_tool(tool.name)
 
-    def add_handlers(self, AVAILABLE_LLMS, AVAILABLE_TTS, AVAILABLE_STT, AVAILABLE_MEMORIES, AVAILABLE_EMBEDDINGS, AVAILABLE_RAGS, AVAILABLE_WEBSEARCH, AVAILABLE_AVATARS, AVAILABLE_TRANSLATORS, AVAILABLE_INTERFACES):
+    def add_handlers(self, AVAILABLE_LLMS, AVAILABLE_TTS, AVAILABLE_STT, AVAILABLE_MEMORIES, AVAILABLE_EMBEDDINGS, AVAILABLE_RAGS, AVAILABLE_WEBSEARCH, AVAILABLE_AVATARS, AVAILABLE_TRANSLATORS, AVAILABLE_INTERFACES=None, AVAILABLE_IMAGE_GENERATORS=None):
         """Add the handlers of each extension to the available handlers
 
         Args:
@@ -494,6 +509,10 @@ class ExtensionLoader:
                 handlers = extension.get_interface_handlers()
                 for handler in handlers:
                     AVAILABLE_INTERFACES[handler["key"]] = handler
+            if AVAILABLE_IMAGE_GENERATORS is not None:
+                handlers = extension.get_image_generator_handlers()
+                for handler in handlers:
+                    AVAILABLE_IMAGE_GENERATORS[handler["key"]] = handler
             handler = extension.get_translators_handlers()
             for h in handler:
                 AVAILABLE_TRANSLATORS[h["key"]] = h

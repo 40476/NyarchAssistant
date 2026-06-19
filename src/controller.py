@@ -19,12 +19,13 @@ from .handlers.rag import RAGHandler
 from .handlers.memory import MemoryHandler
 from .handlers.embeddings import EmbeddingHandler
 from .handlers.websearch import WebSearchHandler
+from .handlers.image_generator import ImageGeneratorHandler
 from .handlers.interfaces.interface import Interface
 
 from .utility.system import is_flatpak
 from .utility.pip import install_module
 from .utility.profile_settings import get_settings_dict_by_groups
-from .constants import AVAILABLE_INTEGRATIONS, AVAILABLE_WEBSEARCH, DIR_NAME, SCHEMA_ID, PROMPTS, AVAILABLE_STT, AVAILABLE_TTS, AVAILABLE_LLMS, AVAILABLE_RAGS, AVAILABLE_PROMPTS, AVAILABLE_MEMORIES, AVAILABLE_EMBEDDINGS, AVAILABLE_INTERFACES, SETTINGS_GROUPS, restore_handlers
+from .constants import AVAILABLE_INTEGRATIONS, AVAILABLE_WEBSEARCH,AVAILABLE_IMAGE_GENERATORS, DIR_NAME, SCHEMA_ID, PROMPTS, AVAILABLE_STT, AVAILABLE_TTS, AVAILABLE_LLMS, AVAILABLE_RAGS, AVAILABLE_PROMPTS, AVAILABLE_MEMORIES, AVAILABLE_EMBEDDINGS, AVAILABLE_INTERFACES, SETTINGS_GROUPS, restore_handlers
 from .constants import AVAILABLE_AVATARS, AVAILABLE_TRANSLATORS
 import threading
 import pickle
@@ -87,7 +88,8 @@ EXTENSIONS: Reload EXTENSIONS
     WEBSEARCH = 12
     OFFERS = 13
     TOOLS = 14
-    WAKEWORD = 15 
+    WAKEWORD = 15
+    IMAGE_GENERATOR = 16 
     # Nyarch Vars
     AVATAR = 40
     TRANSLATORS = 42
@@ -223,6 +225,10 @@ class NewelleController:
         self.ui_controller : UIController | None = None
         self.installing_handlers = {}
         self.tools = ToolRegistry()
+        # Tool names whose full schema has been fetched via tool_search. They are
+        # emitted with full parameters afterwards so lazy-loaded tools can also be
+        # invoked through native tool calling (which needs the schema up front).
+        self.expanded_tools: set[str] = set()
         self.msgid = 0
         self.chat_documents_index = {}
         self.is_call_request = False
@@ -935,7 +941,7 @@ class NewelleController:
             self.extensionloader.load_extensions()
             restore_handlers()
             self.extensionloader.add_prompts(PROMPTS, AVAILABLE_PROMPTS)
-            self.extensionloader.add_handlers(AVAILABLE_LLMS, AVAILABLE_TTS, AVAILABLE_STT, AVAILABLE_MEMORIES, AVAILABLE_EMBEDDINGS, AVAILABLE_RAGS, AVAILABLE_WEBSEARCH,AVAILABLE_AVATARS, AVAILABLE_TRANSLATORS, AVAILABLE_INTERFACES=AVAILABLE_INTERFACES)
+            self.extensionloader.add_handlers(AVAILABLE_LLMS, AVAILABLE_TTS, AVAILABLE_STT, AVAILABLE_MEMORIES, AVAILABLE_EMBEDDINGS, AVAILABLE_RAGS, AVAILABLE_WEBSEARCH,AVAILABLE_AVATARS, AVAILABLE_TRANSLATORS, AVAILABLE_INTERFACES=AVAILABLE_INTERFACES, AVAILABLE_IMAGE_GENERATORS=AVAILABLE_IMAGE_GENERATORS)
             self.newelle_settings.load_prompts()
             self.extensionloader.add_tools(self.tools)
             self.handlers.extensionloader = self.extensionloader
@@ -976,6 +982,9 @@ class NewelleController:
             self.handlers.select_handlers(self.newelle_settings)
             self.newelle_settings.save_prompts()
             self.newelle_settings.load_prompts()
+        elif reload_type == ReloadType.IMAGE_GENERATOR:
+            self.handlers.select_handlers(self.newelle_settings)
+            self.require_tool_update()
 
     def set_extensionsloader(self, extensionloader):
         """Change extension loader
@@ -1053,7 +1062,7 @@ class NewelleController:
         self.extensionloader = ExtensionLoader(self.extension_path, pip_path=self.pip_path,
                                                extension_cache=self.extensions_cache, settings=self.settings)
         self.extensionloader.load_extensions()
-        self.extensionloader.add_handlers(AVAILABLE_LLMS, AVAILABLE_TTS, AVAILABLE_STT, AVAILABLE_MEMORIES, AVAILABLE_EMBEDDINGS, AVAILABLE_RAGS, AVAILABLE_WEBSEARCH,AVAILABLE_AVATARS, AVAILABLE_TRANSLATORS, AVAILABLE_INTERFACES=AVAILABLE_INTERFACES)
+        self.extensionloader.add_handlers(AVAILABLE_LLMS, AVAILABLE_TTS, AVAILABLE_STT, AVAILABLE_MEMORIES, AVAILABLE_EMBEDDINGS, AVAILABLE_RAGS, AVAILABLE_WEBSEARCH,AVAILABLE_AVATARS, AVAILABLE_TRANSLATORS, AVAILABLE_INTERFACES=AVAILABLE_INTERFACES, AVAILABLE_IMAGE_GENERATORS=AVAILABLE_IMAGE_GENERATORS)
         self.extensionloader.add_prompts(PROMPTS, AVAILABLE_PROMPTS)
         self.extensionloader.add_tools(self.tools)
         self.set_ui_controller(self.ui_controller)
@@ -1774,31 +1783,61 @@ class NewelleController:
                     tool_name = tool_call["name"]
                     tool_args = tool_call["args"]
                     tool_uuid = str(uuid_lib.uuid4())[:8]
-                    
+
+                    # Lazy loading: a tool_search call means the model just fetched
+                    # a tool's schema. Expand it in the system prompt so that, on the
+                    # next turn, the tool carries its real parameters and can be
+                    # invoked through native tool calling too.
+                    if (
+                        tool_name == "tool_search"
+                        and isinstance(tool_args, dict)
+                        and tool_args.get("tool_name")
+                    ):
+                        system_prompt = active_tool_registry.expand_tool_in_prompts(
+                            system_prompt, tool_args["tool_name"]
+                        )
+
                     try:
                         tool = active_tool_registry.get_tool(tool_name)
                         if tool is None:
                             raise ValueError(f"Tool '{tool_name}' not found")
 
-                        tool_kwargs = {"msg_uuid": msg_uuid, "tool_uuid": tool_uuid, "chat_id": chat_id, **tool_args}
-                        should_run_on_main_thread = (
-                            force_tools_on_main_thread or tool.run_on_main_thread
+                        # Lazy loading guard: if a lazy tool is called before its
+                        # schema was fetched, hand back the schema instead of
+                        # running it with guessed arguments, and mark it expanded.
+                        redirect = active_tool_registry.maybe_redirect_lazy_tool(
+                            tool_name, self.newelle_settings.tools_settings_dict, self.expanded_tools
                         )
-
-                        if should_run_on_main_thread:
-                            result = self.execute_tool_on_main_thread(
-                                tool_name,
-                                tool_kwargs,
-                                tool_registry=active_tool_registry,
+                        if redirect is not None:
+                            # Native tool calling needs the full schema next turn.
+                            system_prompt = active_tool_registry.expand_tool_in_prompts(
+                                system_prompt, tool_name
                             )
-                        else:
-                            result = tool.execute(**tool_kwargs)
-                        if isinstance(result, ToolResult):
                             if on_tool_result_callback:
-                                on_tool_result_callback(tool_name, result)
-                            tool_result_output = result.get_output()
+                                on_tool_result_callback(tool_name, redirect)
+                            tool_result_output = redirect.get_output()
                             if tool_result_output is not None:
                                 cont = True
+                        else:
+                            tool_kwargs = {"msg_uuid": msg_uuid, "tool_uuid": tool_uuid, "chat_id": chat_id, **tool_args}
+                            should_run_on_main_thread = (
+                                force_tools_on_main_thread or tool.run_on_main_thread
+                            )
+
+                            if should_run_on_main_thread:
+                                result = self.execute_tool_on_main_thread(
+                                    tool_name,
+                                    tool_kwargs,
+                                    tool_registry=active_tool_registry,
+                                )
+                            else:
+                                result = tool.execute(**tool_kwargs)
+                            if isinstance(result, ToolResult):
+                                if on_tool_result_callback:
+                                    on_tool_result_callback(tool_name, result)
+                                tool_result_output = result.get_output()
+                                if tool_result_output is not None:
+                                    cont = True
                     except Exception as e:
                         tool_result_output = f"Error: {str(e)}"
                         if on_tool_result_callback:
@@ -1977,6 +2016,8 @@ class NewelleSettings:
         self.monospace_font_family = settings.get_string("monospace-font-family")
         self.monospace_font_size = settings.get_int("monospace-font-size")
         self.monospace_line_height = settings.get_double("monospace-line-height")
+        self.image_generator = self.settings.get_string("image-generator")
+        self.image_generator_settings = self.settings.get_string("image-generator-settings")
         self.hide_warning = settings.get_boolean("hide-warning")
         self.load_prompts()
         # Nyarch Settings
@@ -2112,6 +2153,8 @@ class NewelleSettings:
             reloads.append(ReloadType.PROMPTS)
         if self.offers != new_settings.offers:
             reloads.append(ReloadType.OFFERS)
+        if self.image_generator != new_settings.image_generator or self.image_generator_settings != new_settings.image_generator_settings:
+            reloads.append(ReloadType.IMAGE_GENERATOR)
         if self.hide_warning != new_settings.hide_warning:
             reloads.append(ReloadType.RELOAD_CHAT)
 
@@ -2201,6 +2244,8 @@ class HandlersManager:
                     newelle_settings.wakeword_engine = list(AVAILABLE_STT.keys())[0]
         if newelle_settings.websearch_model not in AVAILABLE_WEBSEARCH:
             newelle_settings.websearch_model = list(AVAILABLE_WEBSEARCH.keys())[0]
+        if newelle_settings.image_generator not in AVAILABLE_IMAGE_GENERATORS:
+            newelle_settings.image_generator = list(AVAILABLE_IMAGE_GENERATORS.keys())[0]
         if newelle_settings.avatar not in AVAILABLE_AVATARS:
             newelle_settings.avatar = list(AVAILABLE_AVATARS.keys())[0]
         if newelle_settings.translator not in AVAILABLE_TRANSLATORS:
@@ -2237,6 +2282,7 @@ class HandlersManager:
         self.memory.set_memory_size(newelle_settings.memory)
         self.rag : RAGHandler = self.get_object(AVAILABLE_RAGS, newelle_settings.rag_model)
         self.websearch : WebSearchHandler = self.get_object(AVAILABLE_WEBSEARCH, newelle_settings.websearch_model)
+        self.image_generator : ImageGeneratorHandler = self.get_object(AVAILABLE_IMAGE_GENERATORS, newelle_settings.image_generator)
         # Initialize interfaces
         for key in AVAILABLE_INTERFACES:
             interface = self.get_object(AVAILABLE_INTERFACES, key)
@@ -2260,6 +2306,7 @@ class HandlersManager:
         self.memory.set_handlers(self.secondary_llm, self.embedding, self.rag)
 
         self.rag.set_handlers(self.llm, self.embedding)
+        #self.image_generator.set_ui_controller(self.controller.ui_controller)
         threading.Thread(target=self.install_missing_handlers).start()
 
     def set_error_func(self, func):
@@ -2276,6 +2323,9 @@ class HandlersManager:
                 tools.register_tool(tool)
         for tool in self.rag.get_tools():
             tools.register_tool(tool)
+        if self.image_generator is not None:
+            for tool in self.image_generator.get_tools():
+                tools.register_tool(tool)
 
     def load_handlers(self):
         """Load handlers"""
@@ -2289,7 +2339,7 @@ class HandlersManager:
     def install_missing_handlers(self):
         """Install selected handlers that are not installed. Assumes that select_handlers has been called""" 
         handlers = [self.llm, self.stt, self.tts, self.memory, 
-                    self.embedding, self.rag, self.websearch]
+                    self.embedding, self.rag, self.websearch, self.image_generator]
         for handler in handlers:
             if not handler.is_installed():
                 self.set_installing(handler, True)
@@ -2324,6 +2374,8 @@ class HandlersManager:
             self.handlers[(key, self.convert_constants(AVAILABLE_WEBSEARCH), False)] = self.get_object(AVAILABLE_WEBSEARCH, key)
         for key in AVAILABLE_INTERFACES:
             self.handlers[(key, self.convert_constants(AVAILABLE_INTERFACES), False)] = self.get_object(AVAILABLE_INTERFACES, key)
+        for key in AVAILABLE_IMAGE_GENERATORS:
+            self.handlers[(key, self.convert_constants(AVAILABLE_IMAGE_GENERATORS), False)] = self.get_object(AVAILABLE_IMAGE_GENERATORS, key)
         # Nyarch Hanlders
         for key in AVAILABLE_AVATARS:
             self.handlers[(key, self.convert_constants(AVAILABLE_AVATARS))] = self.get_object(AVAILABLE_AVATARS, key)
@@ -2362,6 +2414,8 @@ class HandlersManager:
                     return AVAILABLE_WEBSEARCH
                 case "interface":
                     return AVAILABLE_INTERFACES
+                case "image_generator":
+                    return AVAILABLE_IMAGE_GENERATORS
                 case "extension":
                     return self.extensionloader.extensionsmap
                 case "avatar":
@@ -2387,6 +2441,8 @@ class HandlersManager:
                 return "websearch"
             elif constants == AVAILABLE_INTERFACES:
                 return "interface"
+            elif constants == AVAILABLE_IMAGE_GENERATORS:
+                return "image_generator"
             elif constants == self.extensionloader.extensionsmap:
                 return "extension"
             elif constants == AVAILABLE_AVATARS:
@@ -2435,6 +2491,8 @@ class HandlersManager:
             model = constants[key]["class"](self.settings, os.path.dirname(self.directory))
         elif constants == AVAILABLE_TRANSLATORS:
             model = constants[key]["class"](self.settings, self.directory)
+        elif constants == AVAILABLE_IMAGE_GENERATORS:
+            model = constants[key]["class"](self.settings, self.directory)
         elif constants == self.extensionloader.extensionsmap:
             model = self.extensionloader.extensionsmap[key]
             if model is None:
@@ -2471,6 +2529,8 @@ class HandlersManager:
             return AVAILABLE_RAGS
         elif issubclass(type(handler), WebSearchHandler):
             return AVAILABLE_WEBSEARCH
+        elif issubclass(type(handler), ImageGeneratorHandler):
+            return AVAILABLE_IMAGE_GENERATORS
         elif issubclass(type(handler), Interface):
             return AVAILABLE_INTERFACES
         elif issubclass(type(handler), AvatarHandler):

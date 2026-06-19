@@ -27,6 +27,8 @@ class ReplaceHelper:
         if ReplaceHelper.DISTRO is None:
             try:
                 ReplaceHelper.DISTRO = subprocess.check_output(get_spawn_command() + ['bash', '-c', 'lsb_release -ds']).decode('utf-8').strip()
+                if ReplaceHelper.DISTRO == "\"Arch Linux\"" and os.path.exists(os.path.expanduser("~/.config/nyarch")):
+                    ReplaceHelper.DISTRO = "Nyarch Linux"
             except subprocess.CalledProcessError:
                 ReplaceHelper.DISTRO = "Unknown"
         
@@ -68,14 +70,23 @@ class ReplaceHelper:
         """
         Get the JSON list of tools available to the LLM
         """
-        tools_settings = ReplaceHelper.controller.newelle_settings.tools_settings_dict
+        controller = ReplaceHelper.controller
+        tools_settings = controller.newelle_settings.tools_settings_dict
         enabled_tools = {}
         for tool_name, settings in tools_settings.items():
              if "enabled" in settings:
                  enabled_tools[tool_name] = settings["enabled"]
         # Link websearch setting with the search tool
-        if not ReplaceHelper.controller.newelle_settings.websearch_on:
+        if not controller.newelle_settings.websearch_on:
             enabled_tools["search"] = False
+        # Tools already discovered via tool_search are emitted with their full
+        # schema so they can be invoked through native tool calling too.
+        expanded_tools = getattr(controller, "expanded_tools", None)
+        return controller.tools.get_tools_prompt(
+            enabled_tools_dict=enabled_tools,
+            tools_settings=tools_settings,
+            expanded_tools=expanded_tools,
+        )
         return ReplaceHelper.controller.tools.get_tools_prompt(enabled_tools_dict=enabled_tools, tools_settings=tools_settings)
    
     @staticmethod

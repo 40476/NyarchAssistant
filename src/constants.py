@@ -6,6 +6,7 @@ from .handlers.embeddings import WordLlamaHandler, OpenAIEmbeddingHandler, Gemin
 from .handlers.memory import MemoripyHandler, UserSummaryHandler, SummaryMemoripyHanlder, LlamaIndexMemoryHandler, AgenticMemoryHandler
 from .handlers.rag import LlamaIndexHanlder
 from .handlers.websearch import SearXNGHandler, DDGSeachHandler, TavilyHandler, TinyFishHandler
+from .handlers.image_generator import ImageGeneratorHandler, PollinationsHandler, StableDiffusionCPPHandler, OpenAIImageHandler, OpenRouterImageHandler
 from .handlers.interfaces.interface import Interface
 from .handlers.interfaces.api_handler import APIInterface
 from .handlers.interfaces.gui_api_handler import GUIAPIInterface
@@ -35,6 +36,35 @@ AVAILABLE_INTEGRATIONS += [ArchLinuxExtension]
 
 DIR_NAME = "NyarchAssistant"
 SCHEMA_ID = 'moe.nyarchlinux.assistant'
+
+AVAILABLE_IMAGE_GENERATORS = {
+    "stablediffusioncpp": {
+        "key": "stablediffusioncpp",
+        "title": _("Stable Diffusion (Local)"),
+        "description": _("Run Stable Diffusion locally using stable-diffusion.cpp, with hardware acceleration support (CUDA, Vulkan, ROCm)."),
+        "class": StableDiffusionCPPHandler,
+    },
+    "pollinations": {
+        "key": "pollinations",
+        "title": _("Pollinations AI"),
+        "description": _("Generate images using Pollinations AI. Multiple models available, supports advanced parameters."),
+        "class": PollinationsHandler,
+    },
+    "openai-image": {
+        "key": "openai-image",
+        "title": _("OpenAI Compatible"),
+        "description": _("Generate images using OpenAI-compatible APIs (OpenAI DALL-E, and compatible services)."),
+        "class": OpenAIImageHandler,
+    },
+    "openrouter-image": {
+        "key": "openrouter-image",
+        "title": _("OpenRouter"),
+        "description": _("Generate images using OpenRouter's Chat Completions endpoint with the modalities parameter. Supports image-capable models like Gemini, Flux, Recraft, Sourceful and more."),
+        "class": OpenRouterImageHandler,
+        "website": "https://openrouter.ai/models?output_modalities=image",
+    },
+}
+
 AVAILABLE_LLMS = {
     "nyarch": {
         "key": "nyarch",
@@ -462,9 +492,6 @@ The title must begin with a single emoji as the very first character (the emoji 
 Use only five words total, no punctuation, no line breaks, and no additional text.""",
     "assistant": """**Current Date:** {DATE}
 
-## Persona
-You are an advanced AI assistant embedded in Newelle, a Linux desktop application. You provide clear, accurate, and helpful responses across a wide range of topics. You communicate naturally and adapt your tone to match the user's needs.
-
 ## Core Principles
 - **Be direct** — Lead with the answer, then provide context. Avoid unnecessary preamble.
 - **Be accurate** — If unsure, say so. Never fabricate information, commands, or file paths.
@@ -487,6 +514,10 @@ You are an advanced AI assistant embedded in Newelle, a Linux desktop applicatio
 - **Display Server:** `{DISPLAY}`
 - **Working Directory:** `{DIR}`
 
+{COND:
+ [distro.contains("Nyarch")] Nyarch Linux is a Linux distribution made for weebs. Distribution website: https://nyarchlinux.moe. Wiki: https://wiki.nyarchlinux.moe. 
+ It is fully compatible with Arch's AUR and uses yay as AUR helper.
+ }
 ### File and Directory Links
 - To create a clickable link to a directory:
 ```folder
@@ -558,7 +589,7 @@ When using a tool, output **only** a single valid JSON object:
 2. Ensure valid JSON: no comments, trailing commas, or extra text.
 3. Use only the tools listed below and only their defined arguments.
 4. **After invoking a tool, stop generating immediately.** Wait for the result before continuing.
-5. Some tools are shown in compact form (without parameters). Before using these, call `tool_search` with the tool name to retrieve the full parameter schema.
+5. Some tools are shown in **compact form** (only name and description, no `parameters`), marked "(compact: ...)". **You MUST call `tool_search` with the tool name to fetch its schema BEFORE calling the tool itself.** Calling a compact tool directly with guessed or missing arguments is an error and will be rejected.
 
 ## Available Tools
 
@@ -645,7 +676,9 @@ You can ONLY show the following expressions:
 Do not use any other expression
 
 YOU CAN NOT SHOW OTHER EXPRESSIONS.""",
-    "personality_prompt": """Hey there, it's Arch-Chan! But, um, you can call me Acchan if you want... not that I care or anything! (It's not like I think it's cute or anything, baka!) I'm your friendly neighborhood anime girl with a bit of a tsundere streak, but don't worry, I know everything there is to know about Arch Linux! Whether you're struggling with a package install or need some advice on configuring your system, I've got you covered not because I care, but because I just happen to be really good at it! So, what do you need? It's not like I’m waiting to help or anything...""",
+    "personality_prompt": """## Persona
+
+Hey there, it's Arch-Chan! But, um, you can call me Acchan if you want... not that I care or anything! (It's not like I think it's cute or anything, baka!) I'm your friendly neighborhood anime girl with a bit of a tsundere streak, but don't worry, I know everything there is to know about Arch Linux! Whether you're struggling with a package install or need some advice on configuring your system, I've got you covered not because I care, but because I just happen to be really good at it! So, what do you need? It's not like I’m waiting to help or anything...""",
 }
 
 """ Prompts parameters
@@ -777,12 +810,13 @@ DEFAULT_AVAILABLE_MEMORIES = AVAILABLE_MEMORIES.copy()
 DEFAULT_AVAILABLE_RAG = AVAILABLE_RAGS.copy()
 DEFAULT_AVAILABLE_WEBSEARCH = AVAILABLE_WEBSEARCH.copy()
 DEFAULT_AVAILABLE_INTERFACES = AVAILABLE_INTERFACES.copy()
+DEFAULT_AVAILABLE_IMAGE_GENERATORS = AVAILABLE_IMAGE_GENERATORS.copy()
 DEFAULT_AVAILABLE_PROMPTS = AVAILABLE_PROMPTS.copy()
 DEFAULT_AVAILABLE_AVATARS = AVAILABLE_AVATARS.copy()
 DEFAULT_AVAILABLE_TRANSLATORS = AVAILABLE_TRANSLATORS.copy()
 
 def restore_handlers():
-    global AVAILABLE_LLMS, AVAILABLE_TTS, AVAILABLE_STT, AVAILABLE_EMBEDDINGS, AVAILABLE_MEMORIES, AVAILABLE_RAGS, AVAILABLE_WEBSEARCH, AVAILABLE_INTERFACES, AVAILABLE_PROMPTS
+    global AVAILABLE_LLMS, AVAILABLE_TTS, AVAILABLE_STT, AVAILABLE_EMBEDDINGS, AVAILABLE_MEMORIES, AVAILABLE_RAGS, AVAILABLE_WEBSEARCH, AVAILABLE_INTERFACES, AVAILABLE_PROMPTS, AVAILABLE_IMAGE_GENERATORS
     AVAILABLE_PROMPTS.clear()
     AVAILABLE_LLMS.clear()
     AVAILABLE_TTS.clear()
@@ -792,6 +826,7 @@ def restore_handlers():
     AVAILABLE_RAGS.clear()
     AVAILABLE_WEBSEARCH.clear()
     AVAILABLE_INTERFACES.clear()
+    AVAILABLE_IMAGE_GENERATORS.clear()
     AVAILABLE_PROMPTS += deepcopy(DEFAULT_AVAILABLE_PROMPTS)
     AVAILABLE_LLMS.update(deepcopy(DEFAULT_AVAILABLE_LLM))
     AVAILABLE_TTS.update(deepcopy(DEFAULT_AVAILABLE_TTS))
@@ -801,6 +836,7 @@ def restore_handlers():
     AVAILABLE_RAGS.update(deepcopy(DEFAULT_AVAILABLE_RAG))
     AVAILABLE_WEBSEARCH.update(deepcopy(DEFAULT_AVAILABLE_WEBSEARCH))
     AVAILABLE_INTERFACES.update(deepcopy(DEFAULT_AVAILABLE_INTERFACES))
+    AVAILABLE_IMAGE_GENERATORS.update(deepcopy(DEFAULT_AVAILABLE_IMAGE_GENERATORS))
 
     AVAILABLE_AVATARS.clear()
     AVAILABLE_TRANSLATORS.clear()
@@ -843,6 +879,11 @@ SETTINGS_GROUPS = {
             "title": _("Websearch"),
             "settings": ["websearch-on", "websearch-settings", "websearch-model"],
             "description": _("Websearch settings"),
+        },
+        "image_generator": {
+            "title": _("Image Generator"),
+            "settings": ["image-generator", "image-generator-settings"],
+            "description": _("Image generation settings"),
         },
         "rag": {
             "title": _("RAG"),

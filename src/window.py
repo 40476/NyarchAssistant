@@ -465,6 +465,7 @@ class MainWindow(Adw.ApplicationWindow):
             (_("Terminal Tab"), "gnome-terminal-symbolic", self.add_terminal_tab),
             (_("Browser Tab"), "internet-symbolic", self.add_browser_tab),
             (_("Start Call"), "call-start-symbolic", self.start_call_tab),
+            (_("Image Generator"), "insert-image-symbolic", self.add_image_generator_tab),
         ]
         menu_entries += self.extensionloader.get_add_tab_buttons()
         
@@ -730,13 +731,13 @@ class MainWindow(Adw.ApplicationWindow):
                 self.refresh_context_indicator()
                 return tab_page
 
-    def show_error_dialog(self, title: str, message: str):
+    def show_error_dialog(self, title: str, message: str, parent=None):
         """Show an error dialog with the given title and message."""
         dialog = Adw.AlertDialog(title=title, body=message)
         dialog.add_response("close", "Close")
         dialog.set_response_appearance("close", Adw.ResponseAppearance.DESTRUCTIVE)
         dialog.connect("response", lambda d, r: d.close())
-        dialog.present(self)
+        dialog.present(parent if parent is not None else self)
 
     def handle_error(self, message: str, error: ErrorSeverity):
         if error == ErrorSeverity.ERROR:
@@ -3174,6 +3175,19 @@ class MainWindow(Adw.ApplicationWindow):
         self.show_sidebar()
         self.canvas_tabs.set_selected_page(tab)
         return tab 
+
+    def add_image_generator_tab(self, tabview=None, file=None):
+        from .constants import AVAILABLE_IMAGE_GENERATORS
+        handler = self.controller.handlers.image_generator
+        if handler is None:
+            return
+        mini_app = handler.get_mini_app(AVAILABLE_IMAGE_GENERATORS)
+        tab = self.canvas_tabs.append(mini_app)
+        tab.set_title(_("Image Generator"))
+        tab.set_icon(Gio.ThemedIcon(name="insert-image-symbolic"))
+        self.show_sidebar()
+        self.canvas_tabs.set_selected_page(tab)
+        return tab
 
     def edit_copybox(self, id_message, id_codeblock, new_content, editor=None):
         message_content = self.chat[id_message]["Message"]
